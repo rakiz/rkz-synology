@@ -47,14 +47,15 @@ Replacement for an old `haugene/docker-transmission-openvpn` setup, image frozen
 
 ```
 rkz-transmission-openvpn/
+├── docker-compose.yml              # Container Manager / docker compose deployment
 ├── docker/
 │   ├── Dockerfile                  # Alpine 3.20 + openvpn, transmission-daemon, su-exec, iptables, ip6tables, procps, ca-certificates, tzdata
-│   ├── entrypoint.sh               # Tunnel + kill switch + watchdog (~300 lines of POSIX sh)
-│   └── docker-compose.yml          # Container Manager / docker compose deployment
+│   └── entrypoint.sh               # Tunnel + kill switch + watchdog (~300 lines of POSIX sh)
 ├── configuration/
 │   ├── README.md                   # How to configure OpenVPN and Transmission
 │   ├── settings.json.example       # Template for the Transmission settings (copy it to your /config volume)
 │   └── credentials.txt.example     # Template for the OpenVPN credentials file (2 lines)
+├── openvpn/                        # YOUR real VPN files (gitignored: .ovpn, certs, credentials.txt)
 ├── LICENSE                         # MIT
 └── README.md
 ```
@@ -63,12 +64,13 @@ rkz-transmission-openvpn/
 
 ### 0. Get the repository on the NAS
 
-```bash
-ssh admin@NAS
-git clone https://github.com/rakiz/rkz-transmission-openvpn.git /volume1/docker/rkz-transmission-openvpn
-```
+No SSH needed — File Station only:
 
-(no git package on the NAS? Download the repository zip from GitHub and uncompress it at the same path — same result.)
+1. On GitHub: **Code → Download ZIP** (green button on the repo page).
+2. In DSM **File Station**: create the folder `/volume1/docker/rkz-transmission-openvpn`, upload the zip there, right-click → **Extract**.
+3. Rename the extracted folder if needed so the layout is `/volume1/docker/rkz-transmission-openvpn/` with `docker-compose.yml` directly inside (the zip extracts a `-main` suffix — move the files up one level).
+
+(Comfortable with SSH? `git clone https://github.com/rakiz/rkz-transmission-openvpn.git /volume1/docker/rkz-transmission-openvpn` does the same — and makes updates easier later.)
 
 ### 1. Provider OpenVPN credentials
 
@@ -77,12 +79,10 @@ These are **OpenVPN-dedicated credentials**, different from the website login. F
 ### 2. Prepare the NAS
 
 ```bash
-# VPN folder (the .ovpn file name is free: the first *.ovpn found is used)
-mkdir -p /volume1/docker/rkz-vpn/openvpn
-# → drop the .ovpn file and credentials.txt there (2 lines: login then password)
-sudo chmod 600 /volume1/docker/rkz-vpn/openvpn/credentials.txt
-# Transmission settings: copy the template into the /config volume, then edit it
-cp configuration/settings.json.example /volume1/docker/transmission-home/settings.json
+# VPN folder: INSIDE the project folder (already gitignored if you ever add git)
+# → upload openvpn.ovpn, ca.crt, client.crt, client.key and credentials.txt there
+#   via File Station, from the openvpn/ folder of your Mac copy
+/volume1/docker/rkz-transmission-openvpn/openvpn/
 ```
 
 Existing data folders are reused as is:
@@ -91,7 +91,7 @@ Existing data folders are reused as is:
 volumes:
   - /volume1/docker/transmission-home:/config    # Transmission config + vpn-status.json
   - /volume1/torrents:/data                      # completed/ incomplete/ watch/
-  - /volume1/docker/rkz-vpn/openvpn:/openvpn:ro  # .ovpn + credentials.txt
+  - ./openvpn:/openvpn:ro                        # .ovpn + credentials.txt (relative to the project folder)
 ```
 
 ### 3. Configure the RPC
@@ -103,13 +103,14 @@ The settings file is the one you just copied to `/volume1/docker/transmission-ho
 
 ### 4. Build + run
 
-```bash
-cd /volume1/docker/rkz-transmission-openvpn/docker
-docker compose build
-docker compose up -d
-```
+In Container Manager: **Project → Create**, project path `/volume1/docker/rkz-transmission-openvpn`, source **use the existing docker-compose.yml** at that path → **Build** (first build takes a few minutes) → start the project.
 
-In Container Manager, point the compose file to `docker/docker-compose.yml`.
+Command line equivalent, if SSH is enabled:
+
+```bash
+cd /volume1/docker/rkz-transmission-openvpn
+docker compose up -d --build
+```
 
 ### 5. Remote client (Windows) and Homepage
 
@@ -145,13 +146,18 @@ No configuration change on the client side: same host, same RPC URL, same creden
 
 Configuration and data live on NAS volumes — updating the code or the image never touches them (`settings.json`, `.resume` files, torrents all survive).
 
+Without SSH (File Station + Container Manager):
+
+1. Download the new ZIP on GitHub, extract it on your Mac.
+2. Via File Station, replace in `/volume1/docker/rkz-transmission-openvpn/` everything EXCEPT the `openvpn/` folder (your secrets) — or simply overwrite the files the new version changed.
+3. Container Manager → your project → **Rebuild** (or Stop + Build + Start).
+
+With SSH:
+
 ```bash
-ssh admin@NAS
 cd /volume1/docker/rkz-transmission-openvpn
 git pull
-cd docker
-docker compose build
-docker compose up -d
+docker compose up -d --build
 ```
 
 - `settings.json` is never overwritten by an update: if a new version ships a new template, diff it manually against `configuration/settings.json.example` and port what you want.
@@ -213,7 +219,7 @@ For the OpenVPN and Transmission settings themselves (what to put in the `.ovpn`
 
 The image contains **no secret**: the `.ovpn` file, the OpenVPN credentials and the RPC password are mounted/configured at runtime, never copied into the image. Every deployment uses its own VPN subscription (`.ovpn` + dedicated credentials — most providers limit simultaneous connections per account).
 
-The Synology paths in `docker-compose.yml` are examples: set `VOL_CONFIG`, `VOL_TORRENTS` and `VOL_OPENVPN` in a `docker/.env` file (defaults are the original Synology's). Builds are checked on every push by a GitHub Actions CI (shellcheck, JSON, build + smoke test).
+The Synology paths in `docker-compose.yml` are examples: set `VOL_CONFIG`, `VOL_TORRENTS` and `VOL_OPENVPN` in a `.env` file at the project root (defaults are the original Synology's). Builds are checked on every push by a GitHub Actions CI (shellcheck, JSON, build + smoke test).
 
 Multi-arch build (amd64 + arm64):
 

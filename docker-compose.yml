@@ -1,9 +1,9 @@
 services:
   rkz-transmission-openvpn:
     build:
-      # context stays the repository root: the Dockerfile copies the
-      # Transmission template from configuration/
-      context: ..
+      # the Dockerfile lives in docker/, but the context is the repository
+      # root (it copies the Transmission template from configuration/)
+      context: .
       dockerfile: docker/Dockerfile
     image: rkz/transmission-openvpn:1.0
     container_name: rkz-transmission-openvpn
@@ -30,7 +30,7 @@ services:
       # Override with VOL_CONFIG / VOL_TORRENTS / VOL_OPENVPN in a .env file
       - ${VOL_CONFIG:-/volume1/docker/transmission-home}:/config
       - ${VOL_TORRENTS:-/volume1/torrents}:/data
-      - ${VOL_OPENVPN:-/volume1/docker/rkz-vpn/openvpn}:/openvpn:ro
+      - ${VOL_OPENVPN:-./openvpn}:/openvpn:ro
     restart: unless-stopped
     # Give Transmission time to flush its state (settings/resume) before
     # Docker sends SIGKILL; without this the entrypoint shutdown procedure

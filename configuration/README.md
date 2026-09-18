@@ -24,14 +24,14 @@ The **real** files live on the NAS (paths below) and are never committed: `.giti
 
 - The first `*.ovpn` found in `/openvpn` is used automatically. Several profiles in the folder? Set the env var `OVPN_FILE=/openvpn/<name>.ovpn`.
 - `credentials.txt` holds **OpenVPN-specific credentials** — on most providers (CyberGhost, NordVPN, PIA...) they are **not** your website login. `chmod 600` recommended.
-- On the NAS, these files sit in `/volume1/docker/rkz-vpn/openvpn/` (the folder mounted on `/openvpn` in `docker-compose.yml`).
+- On the NAS, these files sit in the project's `openvpn/` sub-folder (`/volume1/docker/rkz-transmission-openvpn/openvpn/` — the folder mounted on `/openvpn` in `docker-compose.yml`).
 
 ### With CyberGhost (concrete example)
 
 1. Log in at [my.cyberghostvpn.com](https://my.cyberghostvpn.com) → "OpenVPN manual configuration".
 2. Pick the desired country server, download its `.ovpn` file.
 3. Note the dedicated OpenVPN login/password displayed on the same page.
-4. Copy the `.ovpn` into `/volume1/docker/rkz-vpn/openvpn/` on the NAS and create `credentials.txt` there (login on line 1, password on line 2 — use `credentials.txt.example` from this folder as the model).
+4. Copy the `.ovpn` into the project's `openvpn/` sub-folder on the NAS (`/volume1/docker/rkz-transmission-openvpn/openvpn/`) and create `credentials.txt` there (login on line 1, password on line 2 — use `credentials.txt.example` from this folder as the model).
 
 Any other classic OpenVPN provider works the same way: drop its `.ovpn` and its credentials, nothing else to change.
 
@@ -80,6 +80,6 @@ Official reference: the Transmission configuration documentation in the [transmi
 | `ZOMBIE_THRESHOLD` | Failed pings through `tun0` before forcing a reconnect; `0` disables | `3` |
 | `RETRY_DELAY_MAX` | Cap of the reconnect backoff (seconds) | `60` |
 | `TZ` | Timezone for logs and `vpn-status.json` | `Europe/Paris` |
-| `VOL_CONFIG` / `VOL_TORRENTS` / `VOL_OPENVPN` | Host paths for the three volumes | original Synology paths |
+| `VOL_CONFIG` / `VOL_TORRENTS` / `VOL_OPENVPN` | Host paths for the three volumes | `./openvpn` for `VOL_OPENVPN`, original Synology paths otherwise |
 
 When a check fails, the ["Reading the logs"](../README.md#reading-the-logs) section of the root README maps what you see to what to fix.
