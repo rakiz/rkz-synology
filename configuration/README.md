@@ -7,7 +7,7 @@ The two files in this folder are **templates**:
 | File | Role |
 |---|---|
 | `credentials.txt.example` | model for the OpenVPN credentials file (copy as `credentials.txt` on the NAS) |
-| `settings.json.example` | model for the Transmission settings (copy as `settings.json` into your `/config` volume) |
+| `settings.json.example` | model for the Transmission settings (copy as `settings.json` into the project's `config/` folder) |
 
 The **real** files live on the NAS (paths below) and are never committed: `.gitignore` and `.dockerignore` block them.
 
@@ -47,10 +47,10 @@ Any other classic OpenVPN provider works the same way: drop its `.ovpn` and its 
 
 ### How settings work here
 
-- There is **no settings file inside the image**: like the `.ovpn` and `credentials.txt`, the Transmission settings are **provided by you on the NAS volume** (`/volume1/docker/transmission-home/settings.json` — copy the template `settings.json.example` from this folder to there).
+- There is **no settings file inside the image**: like the `.ovpn` and `credentials.txt`, the Transmission settings are **provided by you on the NAS volume** (`/volume1/docker/rkz-transmission-openvpn/config/settings.json` — copy the template `settings.json.example` from this folder to there).
 - The RPC password is written in clear text in the file; the daemon replaces it with a hash on first start.
 - If `settings.json` is missing at startup, the container exits immediately with an error message telling you the exact copy command — it never runs with silent default settings.
-- To change settings later: stop the container first (`docker compose stop`) — Transmission rewrites `settings.json` when it exits, so editing it while running gets overwritten — then edit `/volume1/docker/transmission-home/settings.json` (or change values live from your RPC client, they are persisted too), then `docker compose start`.
+- To change settings later: stop the container first (`docker compose stop`) — Transmission rewrites `settings.json` when it exits, so editing it while running gets overwritten — then edit `/volume1/docker/rkz-transmission-openvpn/config/settings.json` (or change values live from your RPC client, they are persisted too), then `docker compose start`.
 
 ### The settings that matter
 
@@ -80,6 +80,6 @@ Official reference: the Transmission configuration documentation in the [transmi
 | `ZOMBIE_THRESHOLD` | Failed pings through `tun0` before forcing a reconnect; `0` disables | `3` |
 | `RETRY_DELAY_MAX` | Cap of the reconnect backoff (seconds) | `60` |
 | `TZ` | Timezone for logs and `vpn-status.json` | `Europe/Paris` |
-| `VOL_CONFIG` / `VOL_TORRENTS` / `VOL_OPENVPN` | Host paths for the three volumes | `./openvpn` for `VOL_OPENVPN`, original Synology paths otherwise |
+| `VOL_CONFIG` / `VOL_TORRENTS` / `VOL_OPENVPN` | Host paths for the three volumes | `./openvpn` for `VOL_OPENVPN`, the project's `./config` and `./openvpn` folders otherwise |
 
 When a check fails, the ["Reading the logs"](../README.md#reading-the-logs) section of the root README maps what you see to what to fix.

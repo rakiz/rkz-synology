@@ -56,6 +56,7 @@ rkz-transmission-openvpn/
 │   ├── settings.json.example       # Template for the Transmission settings (copy it to your /config volume)
 │   └── credentials.txt.example     # Template for the OpenVPN credentials file (2 lines)
 ├── openvpn/                        # YOUR real VPN files (gitignored: .ovpn, certs, credentials.txt)
+├── config/                         # created at deploy: Transmission's live state (settings.json + .resume)
 ├── LICENSE                         # MIT
 └── README.md
 ```
@@ -85,18 +86,18 @@ These are **OpenVPN-dedicated credentials**, different from the website login. F
 /volume1/docker/rkz-transmission-openvpn/openvpn/
 ```
 
-Existing data folders are reused as is:
+Volumes — `config/` and `openvpn/` live inside the project folder, the torrents folder stays where it is:
 
 ```yaml
 volumes:
-  - /volume1/docker/transmission-home:/config    # Transmission config + vpn-status.json
-  - /volume1/torrents:/data                      # completed/ incomplete/ watch/
-  - ./openvpn:/openvpn:ro                        # .ovpn + credentials.txt (relative to the project folder)
+  - ./config:/config                              # the project's config/ folder — Transmission's live state
+  - /volume1/torrents:/data                       # completed/ incomplete/ watch/ (existing data)
+  - ./openvpn:/openvpn:ro                         # .ovpn + credentials.txt (relative to the project folder)
 ```
 
 ### 3. Configure the RPC
 
-The settings file is the one you just copied to `/volume1/docker/transmission-home/settings.json` (if you are reusing a `/volume1/docker/transmission-home` folder from a previous setup, it already contains a `settings.json` — review it instead of overwriting it). Replace:
+The settings file is the one in the project's `config/` folder (`/volume1/docker/rkz-transmission-openvpn/config/settings.json` — if you migrated the content of a previous setup in there, review its `settings.json` instead of overwriting it). Replace:
 
 - `"rpc-password": "changeme"` → the desired password (Transmission hashes it itself on first start),
 - `"rpc-username": "username"` → the desired username.
@@ -133,14 +134,14 @@ No configuration change on the client side: same host, same RPC URL, same creden
 
 ### Reusing an existing Transmission setup (coming from haugene)
 
-`/volume1/docker/transmission-home` is reused as is: `settings.json`, the `.resume` files and the torrent list survive untouched, and the RPC credentials your client already uses stay valid — nothing to change client-side. Two things to check in `settings.json`:
+Everything lives in the project folder now — `/config` points to the project's `config/` sub-folder. To migrate: in File Station, select **all the content** of the old `/volume1/docker/transmission-home/` (settings.json, .resume files, everything) and **copy** it into `/volume1/docker/rkz-transmission-openvpn/config/` (create the folder). The old folder stays untouched as a natural backup — delete it whenever you feel ready.
 
 - `"bind-address-ipv4"`: the haugene setup often froze it to the NordVPN tunnel IP — set it back to `"0.0.0.0"` (the tunnel IP is dynamic here);
 - `"download-dir"` / `"incomplete-dir"` / `"watch-dir"`: keep whatever they point at (the compose maps `/volume1/torrents` to `/data` the same way).
 
 `/volume1/torrents` is reused as is too.
 
-**Before starting the new container, stop and remove the old one** (Container Manager: stop + delete the container, keep its folders) — two daemons cannot share the same `/config` folder.
+**Before starting the new container, stop and remove the old one** (Container Manager: stop + delete the container) — two daemons cannot run on the same settings at once.
 
 ## Updating later
 
@@ -168,7 +169,7 @@ docker compose up -d --build
 
 ```bash
 # Status: public IP as seen through the tunnel, tunnel state, timestamp
-docker exec rkz-transmission-openvpn cat /config/vpn-status.json
+cat /volume1/docker/rkz-transmission-openvpn/config/vpn-status.json
 ```
 
 ```json
@@ -219,7 +220,7 @@ For the OpenVPN and Transmission settings themselves (what to put in the `.ovpn`
 
 The image contains **no secret**: the `.ovpn` file, the OpenVPN credentials and the RPC password are mounted/configured at runtime, never copied into the image. Every deployment uses its own VPN subscription (`.ovpn` + dedicated credentials — most providers limit simultaneous connections per account).
 
-The Synology paths in `docker-compose.yml` are examples: set `VOL_CONFIG`, `VOL_TORRENTS` and `VOL_OPENVPN` in a `.env` file at the project root (defaults are the original Synology's). Builds are checked on every push by a GitHub Actions CI (shellcheck, JSON, build + smoke test).
+The paths in `docker-compose.yml` are examples: set `VOL_CONFIG`, `VOL_TORRENTS` and `VOL_OPENVPN` in a `.env` file at the project root (defaults: the project's `config/` and `openvpn/` folders, torrents stay at `/volume1/torrents`). Builds are checked on every push by a GitHub Actions CI (shellcheck, JSON, build + smoke test).
 
 Multi-arch build (amd64 + arm64):
 

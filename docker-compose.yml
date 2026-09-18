@@ -28,7 +28,7 @@ services:
       start_period: 2m
     volumes:
       # Override with VOL_CONFIG / VOL_TORRENTS / VOL_OPENVPN in a .env file
-      - ${VOL_CONFIG:-/volume1/docker/transmission-home}:/config
+      - ${VOL_CONFIG:-./config}:/config
       - ${VOL_TORRENTS:-/volume1/torrents}:/data
       - ${VOL_OPENVPN:-./openvpn}:/openvpn:ro
     restart: unless-stopped
