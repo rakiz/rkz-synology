@@ -325,6 +325,12 @@ nameserver 1.1.1.1
 nameserver 9.9.9.9
 EOF
 
+# The /dev/net/tun node file is absent on some hosts (Synology ships the
+# tun kernel module without the node): create it ourselves - the module
+# itself is the real requirement, and NET_ADMIN grants us the mknod.
+mkdir -p /dev/net
+[ -e /dev/net/tun ] || mknod /dev/net/tun c 10 200
+
 reconnect || graceful_shutdown
 
 # -----------------------------------------------------------------------------

@@ -58,12 +58,12 @@ Any other classic OpenVPN provider works the same way: drop its `.ovpn` and its 
 |---|---|
 | `rpc-username` / `rpc-password` | credentials used by your Windows RPC client and the Homepage widget |
 | `rpc-url` (`/transmission/`) | keep consistent with the client and the Homepage `rpcUrl` |
-| `rpc-port` (`9091`) | published as `59091` on the host — clients connect to `NAS_IP:59091` |
+| `rpc-port` (`9091`) | published as-is on the host (`9091:9091`) — clients connect to `NAS_IP:9091` |
 | `download-dir` (`/data/completed`) | finished torrents (host: `/volume1/torrents/completed`) |
 | `incomplete-dir` + `incomplete-dir-enabled` | partial downloads (host: `/volume1/torrents/incomplete`) |
 | `watch-dir` (`/data/watch`) + enabled | drop a `.torrent` file there → auto-added |
 | `peer-port` (`51413`) | internal only, reached through the VPN tunnel — deliberately **not** published on the host |
-| `bind-address-ipv4` (`0.0.0.0`) | keep broad: the tunnel interface's IP is dynamic (the old setup had a NordVPN tunnel IP hard-coded here — a mistake this default fixes) |
+| `bind-address-ipv4` (`0.0.0.0`) | keep broad: the tunnel interface's IP is dynamic |
 | `umask` (`2`) | files created `664` / dirs `775` (usable by the shared group) |
 | `cache-size-mb`, `peer-limit-*`, `speed-limit-*` | tuning knobs; `*-enabled: false` means the limit does not apply |
 
@@ -80,6 +80,5 @@ Official reference: the Transmission configuration documentation in the [transmi
 | `ZOMBIE_THRESHOLD` | Failed pings through `tun0` before forcing a reconnect; `0` disables | `3` |
 | `RETRY_DELAY_MAX` | Cap of the reconnect backoff (seconds) | `60` |
 | `TZ` | Timezone for logs and `vpn-status.json` | `Europe/Paris` |
-| `VOL_CONFIG` / `VOL_TORRENTS` / `VOL_OPENVPN` | Host paths for the three volumes | `./openvpn` for `VOL_OPENVPN`, the project's `./config` and `./openvpn` folders otherwise |
 
 When a check fails, the ["Reading the logs"](../README.md#reading-the-logs) section of the root README maps what you see to what to fix.

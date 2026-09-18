@@ -13,7 +13,7 @@ BitTorrent client **Transmission** behind an **OpenVPN** tunnel, in a single lig
 │  │    └─ Watchdog: tunnel dead or zombie? → reconnect + re-apply kill      │   │
 │  │         switch, in a loop, with no human intervention                   │   │
 │  └──────────────────────────────────────────────────────────────────────────┘   │
-│         │ RPC 59091                      │ /config/vpn-status.json              │
+│         │ RPC 9091                      │ /config/vpn-status.json              │
 │         ▼                                ▼                                     │
 │   Windows client / Homepage widget   Visual health check                       │
 └────────────────────────────────────────────────────────────────────────────────┘
@@ -80,27 +80,30 @@ These are **OpenVPN-dedicated credentials**, different from the website login. F
 ### 2. Prepare the NAS
 
 ```bash
+mkdir -p config
+cp configuration/settings.json.example config/settings.json
+
 # VPN folder: INSIDE the project folder (already gitignored if you ever add git)
 # → upload openvpn.ovpn, ca.crt, client.crt, client.key and credentials.txt there
 #   via File Station, from the openvpn/ folder of your Mac copy
 /volume1/docker/rkz-transmission-openvpn/openvpn/
 ```
 
-Volumes — `config/` and `openvpn/` live inside the project folder, the torrents folder stays where it is:
+Volumes — the project folders for the configuration and VPN files, the existing torrents folder for the data:
 
 ```yaml
 volumes:
-  - ./config:/config                              # the project's config/ folder — Transmission's live state
-  - /volume1/torrents:/data                       # completed/ incomplete/ watch/ (existing data)
-  - ./openvpn:/openvpn:ro                         # .ovpn + credentials.txt (relative to the project folder)
+  - ./config:/config                # the project's config/ folder — Transmission's live state
+  - /volume1/torrents:/data         # completed/ incomplete/ watch/ — your existing data, untouched
+  - ./openvpn:/openvpn:ro           # .ovpn + credentials.txt
 ```
 
 ### 3. Configure the RPC
 
-The settings file is the one in the project's `config/` folder (`/volume1/docker/rkz-transmission-openvpn/config/settings.json` — if you migrated the content of a previous setup in there, review its `settings.json` instead of overwriting it). Replace:
+Edit `/volume1/docker/rkz-transmission-openvpn/config/settings.json` (created in the previous step), replace:
 
-- `"rpc-password": "changeme"` → the desired password (Transmission hashes it itself on first start),
-- `"rpc-username": "username"` → the desired username.
+- `"rpc-password": "changeme"` → the desired password (hashed automatically on the first start),
+- `"rpc-username": "username"` → the desired username, if you want a different one.
 
 ### 4. Build + run
 
@@ -115,33 +118,22 @@ docker compose up -d --build
 
 ### 5. Remote client (Windows) and Homepage
 
-No configuration change on the client side: same host, same RPC URL, same credentials as the old setup.
+Same URL scheme as any Transmission RPC client: `http://NAS_IP:9091`, RPC URL `/transmission/`.
 
-- **RPC client**: `http://NAS_IP:59091`, RPC URL `/transmission/`
+- **RPC client**: `http://NAS_IP:9091`, RPC URL `/transmission/`
 - **Homepage widget** (gethomepage/homepage):
 
 ```yaml
 - Transmission:
     icon: transmission.png
-    href: http://NAS_IP:59091
+    href: http://NAS_IP:9091
     widget:
       type: transmission
-      url: http://NAS_IP:59091
+      url: http://NAS_IP:9091
       username: username
       password: YOUR_RPC_PASSWORD_IN_CLEAR
       rpcUrl: /transmission/
 ```
-
-### Reusing an existing Transmission setup (coming from haugene)
-
-Everything lives in the project folder now — `/config` points to the project's `config/` sub-folder. To migrate: in File Station, select **all the content** of the old `/volume1/docker/transmission-home/` (settings.json, .resume files, everything) and **copy** it into `/volume1/docker/rkz-transmission-openvpn/config/` (create the folder). The old folder stays untouched as a natural backup — delete it whenever you feel ready.
-
-- `"bind-address-ipv4"`: the haugene setup often froze it to the NordVPN tunnel IP — set it back to `"0.0.0.0"` (the tunnel IP is dynamic here);
-- `"download-dir"` / `"incomplete-dir"` / `"watch-dir"`: keep whatever they point at (the compose maps `/volume1/torrents` to `/data` the same way).
-
-`/volume1/torrents` is reused as is too.
-
-**Before starting the new container, stop and remove the old one** (Container Manager: stop + delete the container) — two daemons cannot run on the same settings at once.
 
 ## Updating later
 
@@ -196,7 +188,8 @@ Everything lands on stdout — in Container Manager: container → **Log** tab (
 | `[rkz-vpn] ERROR: /openvpn/credentials.txt not found` | credentials file missing | create it (2 lines: login, password) |
 | `[openvpn] ... AUTH_FAILED` / authentication errors | wrong VPN credentials | `credentials.txt` must hold the provider's **OpenVPN-dedicated** login, not the website one |
 | `[openvpn] ... could not resolve host` / resolution errors | DNS problem | keep the DNS egress rules in the kill switch; check the NAS DNS configuration |
-| `[openvpn] ... Cannot open TUN/TAP dev /dev/net/tun` | tun device not passed | keep `devices: /dev/net/tun` and `cap_add: NET_ADMIN` in the compose |
+| `[openvpn] ... Cannot open TUN/TAP dev /dev/net/tun` | tun device not passed | the tun kernel module is missing on the host — `sudo insmod /lib/modules/tun.ko` (see Known limitations) |
+| `error gathering device information ... /dev/net/tun` ( Container Manager journal, container stuck in `Created`) | tun kernel module not loaded on the host | `sudo insmod /lib/modules/tun.ko`, then rebuild the project |
 | `tunnel_up: true` but `public_ip` shows your real ISP/router IP | traffic leaking around the tunnel | bug — open an issue with the logs |
 | `[rkz-vpn] ERROR: Transmission exited unexpectedly` + container restarts | daemon crash | check the /config volume ownership (UID 1000) |
 | `WARN: ip6tables unavailable on this host` | host kernel lacks `ip6_tables` | IPv6 protection relies on the sysctl; verify `cat /proc/sys/net/ipv6/conf/all/disable_ipv6` returns `1` |
@@ -220,7 +213,7 @@ For the OpenVPN and Transmission settings themselves (what to put in the `.ovpn`
 
 The image contains **no secret**: the `.ovpn` file, the OpenVPN credentials and the RPC password are mounted/configured at runtime, never copied into the image. Every deployment uses its own VPN subscription (`.ovpn` + dedicated credentials — most providers limit simultaneous connections per account).
 
-The paths in `docker-compose.yml` are examples: set `VOL_CONFIG`, `VOL_TORRENTS` and `VOL_OPENVPN` in a `.env` file at the project root (defaults: the project's `config/` and `openvpn/` folders, torrents stay at `/volume1/torrents`). Builds are checked on every push by a GitHub Actions CI (shellcheck, JSON, build + smoke test).
+The paths in `docker-compose.yml` are examples: the project's `./config` and `./openvpn` folders, and `/volume1/torrents` for the data — edit the paths in `docker-compose.yml` directly. Builds are checked on every push by a GitHub Actions CI (shellcheck, JSON, build + smoke test).
 
 Multi-arch build (amd64 + arm64):
 
@@ -233,6 +226,7 @@ docker buildx build --platform linux/amd64,linux/arm64 \
 
 ## Known limitations
 
+- **tun kernel module**: the container creates its own `/dev/net/tun` node, but the kernel module must exist. If it is not loaded (fresh DSM boot), load it once: `sudo insmod /lib/modules/tun.ko` — and add the same command to a boot-up task (DSM Task Scheduler) so it survives reboots.
 - **`ip6_tables` kernel module on the host**: if missing (possible on DSM), the logs show `ip6tables unavailable on this host` and IPv6 protection relies only on the sysctl — then verify that `docker exec rkz-transmission-openvpn cat /proc/sys/net/ipv6/conf/all/disable_ipv6` returns `1`.
 - **Container network interface name**: not guaranteed to be `eth0` depending on DSM; the kill switch matches private IP ranges rather than interface names, which limits the risk. If the LAN is unreachable at startup: `docker exec rkz-transmission-openvpn ip addr`.
 - **Zombie probe uses ICMP**: it pings `1.1.1.1` through `tun0`. If your VPN provider blocks ICMP, set `ZOMBIE_THRESHOLD=0` to disable the probe (the base watchdog stays active).

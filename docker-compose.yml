@@ -9,8 +9,7 @@ services:
     container_name: rkz-transmission-openvpn
     cap_add:
       - NET_ADMIN
-    devices:
-      - /dev/net/tun:/dev/net/tun
+      - DAC_OVERRIDE
     environment:
       # Timestamps in vpn-status.json and logs use this timezone (needs tzdata)
       - TZ=Europe/Paris
@@ -19,7 +18,14 @@ services:
     # Publishing it would open a useless docker-proxy on the host (leak
     # vector) with no benefit.
     ports:
-      - "59091:9091"
+      - "9091:9091"
+    # Cap the log files: the streamed [openvpn] lines are verbose, and
+    # without rotation they would grow unbounded
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: 3
     healthcheck:
       test: ["CMD-SHELL", "grep -q '\"tunnel_up\": true' /config/vpn-status.json"]
       interval: 1m
@@ -27,10 +33,11 @@ services:
       retries: 3
       start_period: 2m
     volumes:
-      # Override with VOL_CONFIG / VOL_TORRENTS / VOL_OPENVPN in a .env file
-      - ${VOL_CONFIG:-./config}:/config
-      - ${VOL_TORRENTS:-/volume1/torrents}:/data
-      - ${VOL_OPENVPN:-./openvpn}:/openvpn:ro
+      # Configuration and VPN files live inside the project folder; the
+      # torrent data lives outside it.
+      - ./config:/config
+      - /volume1/torrents:/data
+      - ./openvpn:/openvpn:ro
     restart: unless-stopped
     # Give Transmission time to flush its state (settings/resume) before
     # Docker sends SIGKILL; without this the entrypoint shutdown procedure
