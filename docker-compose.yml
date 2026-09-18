@@ -1,0 +1,33 @@
+services:
+  rkz-transmission-openvpn:
+    build: .
+    image: rkz/transmission-openvpn:1.0
+    container_name: rkz-transmission-openvpn
+    environment:
+      # Horodatages de vpn-status.json à l'heure française (tzdata requis)
+      - TZ=Europe/Paris
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    # Le port peer 51413 N'EST PAS publié sur l'hôte : CyberGhost n'a pas de
+    # port forwarding, les pairs arrivent forcément via tun0. Publier ce port
+    # ouvrirait un docker-proxy inutile sur l'hôte (vecteur de fuite potentiel)
+    # sans aucun bénéfice réel.
+    ports:
+      - "59091:9091"
+    healthcheck:
+      test: ["CMD-SHELL", "grep -q '\"tunnel_up\": true' /config/vpn-status.json"]
+      interval: 1m
+      timeout: 5s
+      retries: 3
+      start_period: 2m
+    volumes:
+      - ${VOL_CONFIG:-/volume1/docker/transmission-home}:/config
+      - ${VOL_TORRENTS:-/volume1/torrents}:/data
+      - ${VOL_OPENVPN:-/volume1/docker/rkz-vpn/openvpn}:/openvpn:ro
+    restart: unless-stopped
+    # Laisse le temps à Transmission de flush proprement son état (settings/
+    # resume) avant que Docker n'envoie un SIGKILL. Sans ça, le trap dans
+    # entrypoint.sh peut se faire tuer avant d'avoir fini son travail.
+    stop_grace_period: 30s

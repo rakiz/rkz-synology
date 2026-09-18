@@ -1,0 +1,10 @@
+# Secrets locaux — ne jamais committer
+openvpn/credentials.txt
+openvpn/*.ovpn
+
+# Environnement local
+.env
+
+# Divers
+.DS_Store
+*.swp

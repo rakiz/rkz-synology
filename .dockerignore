@@ -1,0 +1,8 @@
+.git
+.github
+.env
+README.md
+LICENSE
+openvpn/credentials.txt
+openvpn/*.ovpn
+.DS_Store
