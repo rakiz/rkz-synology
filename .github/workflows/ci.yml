@@ -17,23 +17,23 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Validation du JSON
+      - name: JSON validation
         run: python3 -m json.tool settings.default.json > /dev/null
 
   build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Build de l'image
+      - name: Build the image
         run: docker build -t rkz-transmission-openvpn:ci .
-      - name: Smoke test - sans .ovpn, le conteneur doit sortir en erreur (exit 1)
+      - name: Smoke test - without an .ovpn the container must exit with code 1
         run: |
           set +e
           out=$(docker run --rm rkz-transmission-openvpn:ci 2>&1)
           code=$?
           echo "$out"
           if [ "$code" -ne 1 ]; then
-            echo "::error::exit attendu 1, obtenu $code"
+            echo "::error::expected exit 1, got $code"
             exit 1
           fi
-          echo "$out" | grep -q "aucun fichier .ovpn"
+          echo "$out" | grep -q "no .ovpn file found"

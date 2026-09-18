@@ -1,6 +1,9 @@
 FROM alpine:3.20
 
-# --- Paquets minimaux : openvpn + transmission-daemon + su-exec pour drop de privilèges + iptables pour le kill switch
+# Minimal package set: openvpn + transmission-daemon + su-exec for the
+# privilege drop + iptables/ip6tables for the kill switch + procps for
+# pgrep/pkill in the watchdog + ca-certificates for the public-IP check
+# + tzdata for meaningful timestamps.
 RUN apk add --no-cache \
     openvpn \
     transmission-daemon \
@@ -11,7 +14,7 @@ RUN apk add --no-cache \
     ca-certificates \
     tzdata
 
-# --- Utilisateur non-root pour faire tourner transmission-daemon
+# Unprivileged user for transmission-daemon (only OpenVPN needs root/NET_ADMIN)
 RUN addgroup -g 1000 rakiz && \
     adduser -D -u 1000 -G rakiz rakiz && \
     mkdir -p /config /data/completed /data/incomplete /data/watch && \
@@ -21,9 +24,8 @@ COPY entrypoint.sh /entrypoint.sh
 COPY settings.default.json /settings.default.json
 RUN chmod +x /entrypoint.sh
 
-# Seul le RPC est destiné à être exposé sur l'hôte. Le trafic pair-à-pair
-# (port peer 51413) transite exclusivement par tun0, jamais par l'hôte
-# (CyberGhost n'a pas de port forwarding, publier ce port ne servirait à rien).
+# Only the RPC port is meant to be reached from the host. Peer traffic
+# (port 51413) goes through the tunnel exclusively, never through the host.
 EXPOSE 9091
 
 ENTRYPOINT ["/entrypoint.sh"]
