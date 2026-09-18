@@ -1,6 +1,8 @@
 # Local secrets - never commit
 openvpn/credentials.txt
 openvpn/*.ovpn
+configuration/credentials.txt
+configuration/*.ovpn
 
 # Local environment
 .env

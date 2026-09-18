@@ -50,6 +50,14 @@ if [ ! -f "$CREDS_FILE" ]; then
   echo "[rkz-vpn] ERROR: $CREDS_FILE not found."
   exit 1
 fi
+if [ ! -f "/config/settings.json" ]; then
+  echo "[rkz-vpn] ERROR: /config/settings.json not found."
+  echo "[rkz-vpn] The Transmission settings are provided by YOU in the /config volume"
+  echo "[rkz-vpn] (nothing is baked into the image). Fix:"
+  echo "[rkz-vpn]   cp configuration/settings.json.example <your /config volume>/settings.json"
+  echo "[rkz-vpn]   then set rpc-username / rpc-password in it (see configuration/README.md)."
+  exit 1
+fi
 echo "[rkz-vpn] INFO: config file in use: $OVPN_FILE"
 
 # -----------------------------------------------------------------------------
@@ -297,13 +305,12 @@ disable_ipv6_sysctl
 reconnect || graceful_shutdown
 
 # -----------------------------------------------------------------------------
-# 2. Seed the Transmission configuration on first boot only: the file in the
-#    volume is never overwritten afterwards, so manual tweaks survive
-#    image upgrades. Non-recursive chown: top-level dirs only, never the
-#    whole (possibly multi-TB) data tree.
+# 2. Transmission configuration: user-provided in the /config volume
+#    (checked at startup, fail fast) - nothing is seeded or overwritten
+#    here. Non-recursive chown: top-level dirs only, never the whole
+#    (possibly multi-TB) data tree.
 # -----------------------------------------------------------------------------
-mkdir -p /config /data/completed /data/incomplete /data/watch
-[ -f /config/settings.json ] || cp /settings.default.json /config/settings.json
+mkdir -p /data/completed /data/incomplete /data/watch
 chown rakiz:rakiz /config /data /data/completed /data/incomplete /data/watch 2>/dev/null
 
 # -----------------------------------------------------------------------------

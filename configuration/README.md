@@ -1,6 +1,15 @@
-# Configuration guide
+# Configuring rkz-transmission-openvpn
 
 Everything you need to fill in lives in two places: the **OpenVPN side** (one `.ovpn` profile + one credentials file) and the **Transmission side** (one JSON settings file). No VPN provider and no credential is ever hard-coded in the image.
+
+The two files in this folder are **templates**:
+
+| File | Role |
+|---|---|
+| `credentials.txt.example` | model for the OpenVPN credentials file (copy as `credentials.txt` on the NAS) |
+| `settings.json.example` | model for the Transmission settings (copy as `settings.json` into your `/config` volume) |
+
+The **real** files live on the NAS (paths below) and are never committed: `.gitignore` and `.dockerignore` block them.
 
 ---
 
@@ -15,13 +24,14 @@ Everything you need to fill in lives in two places: the **OpenVPN side** (one `.
 
 - The first `*.ovpn` found in `/openvpn` is used automatically. Several profiles in the folder? Set the env var `OVPN_FILE=/openvpn/<name>.ovpn`.
 - `credentials.txt` holds **OpenVPN-specific credentials** — on most providers (CyberGhost, NordVPN, PIA...) they are **not** your website login. `chmod 600` recommended.
+- On the NAS, these files sit in `/volume1/docker/rkz-vpn/openvpn/` (the folder mounted on `/openvpn` in `docker-compose.yml`).
 
 ### With CyberGhost (concrete example)
 
 1. Log in at [my.cyberghostvpn.com](https://my.cyberghostvpn.com) → "OpenVPN manual configuration".
-2. Pick the country server, download its `.ovpn` file.
+2. Pick the desired country server, download its `.ovpn` file.
 3. Note the dedicated OpenVPN login/password displayed on the same page.
-4. Copy the `.ovpn` into `/volume1/docker/rkz-vpn/openvpn/` on the NAS and create `credentials.txt` there (login on line 1, password on line 2).
+4. Copy the `.ovpn` into `/volume1/docker/rkz-vpn/openvpn/` on the NAS and create `credentials.txt` there (login on line 1, password on line 2 — use `credentials.txt.example` from this folder as the model).
 
 Any other classic OpenVPN provider works the same way: drop its `.ovpn` and its credentials, nothing else to change.
 
@@ -37,8 +47,9 @@ Any other classic OpenVPN provider works the same way: drop its `.ovpn` and its 
 
 ### How settings work here
 
-- On the **first boot only**, `settings.default.json` is copied to the `/config` volume as `settings.json` — it is **never overwritten afterwards**, so your tweaks survive image upgrades.
+- There is **no settings file inside the image**: like the `.ovpn` and `credentials.txt`, the Transmission settings are **provided by you on the NAS volume** (`/volume1/docker/transmission-home/settings.json` — copy the template `settings.json.example` from this folder to there).
 - The RPC password is written in clear text in the file; the daemon replaces it with a hash on first start.
+- If `settings.json` is missing at startup, the container exits immediately with an error message telling you the exact copy command — it never runs with silent default settings.
 - To change settings later: stop the container first (`docker compose stop`) — Transmission rewrites `settings.json` when it exits, so editing it while running gets overwritten — then edit `/volume1/docker/transmission-home/settings.json` (or change values live from your RPC client, they are persisted too), then `docker compose start`.
 
 ### The settings that matter
@@ -71,4 +82,4 @@ Official reference: the Transmission configuration documentation in the [transmi
 | `TZ` | Timezone for logs and `vpn-status.json` | `Europe/Paris` |
 | `VOL_CONFIG` / `VOL_TORRENTS` / `VOL_OPENVPN` | Host paths for the three volumes | original Synology paths |
 
-When a check fails, the "Reading the logs" section of the README maps what you see to what to fix.
+When a check fails, the ["Reading the logs"](../README.md#reading-the-logs) section of the root README maps what you see to what to fix.

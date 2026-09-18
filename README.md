@@ -41,28 +41,29 @@ Replacement for an old `haugene/docker-transmission-openvpn` setup, image frozen
 | **Kill switch by IP ranges, not by interface name** | The container's network interface name is not guaranteed (`eth0`, `br-*` depending on DSM); the rules match private IP ranges, not an interface name. |
 | **Hand-written entry script** | ~300 lines of shell understood end to end, rather than a third-party abstraction layer that is itself a source of bugs (open issues on haugene and gluetun specifically for CyberGhost). |
 | **Peer port 51413 not published** | Intentional: peers reach the client through the tunnel (`tun0`). Publishing it on the host is useless (CyberGhost has no port forwarding) and is a leak vector. |
-| **Transmission config seeded on first boot only** | `settings.default.json` is copied to `/config` only if `settings.json` does not exist — never overwritten afterwards, so manual tweaks made on the NAS survive. |
+| **All configuration comes from volumes** | The image contains no settings: the `.ovpn`, `credentials.txt` and `settings.json` all live on the NAS — one single mental model, and manual tweaks survive image upgrades by design. |
 
 ## Repository layout
 
 ```
 rkz-transmission-openvpn/
-├── Dockerfile                      # Alpine 3.20 + openvpn, transmission-daemon, su-exec, iptables, ip6tables, procps, ca-certificates, tzdata
-├── entrypoint.sh                   # Tunnel + kill switch + watchdog (~300 lines of POSIX sh)
-├── settings.default.json           # Transmission config used on first boot
-├── docker-compose.yml              # Container Manager / docker compose deployment
-├── docs/
-│   └── CONFIGURATION.md            # Step-by-step guide: OpenVPN side + Transmission side
+├── docker/
+│   ├── Dockerfile                  # Alpine 3.20 + openvpn, transmission-daemon, su-exec, iptables, ip6tables, procps, ca-certificates, tzdata
+│   ├── entrypoint.sh               # Tunnel + kill switch + watchdog (~300 lines of POSIX sh)
+│   └── docker-compose.yml          # Container Manager / docker compose deployment
+├── configuration/
+│   ├── README.md                   # How to configure OpenVPN and Transmission
+│   ├── settings.json.example       # Template for the Transmission settings (copy it to your /config volume)
+│   └── credentials.txt.example     # Template for the OpenVPN credentials file (2 lines)
 ├── LICENSE                         # MIT
-└── openvpn/
-    └── credentials.txt.example     # Template for the OpenVPN credentials file (2 lines)
+└── README.md
 ```
 
 ## Installation (Synology)
 
 ### 1. Provider OpenVPN credentials
 
-These are **OpenVPN-dedicated credentials**, different from the website login. For CyberGhost: log in at [my.cyberghostvpn.com](https://my.cyberghostvpn.com), "OpenVPN manual configuration" section, download the `.ovpn` of the desired country and note the OpenVPN login/password provided there. See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for the full walkthrough.
+These are **OpenVPN-dedicated credentials**, different from the website login. For CyberGhost: log in at [my.cyberghostvpn.com](https://my.cyberghostvpn.com), "OpenVPN manual configuration" section, download the `.ovpn` of the desired country and note the OpenVPN login/password provided there. See [configuration/README.md](configuration/README.md) for the full walkthrough.
 
 ### 2. Prepare the NAS
 
@@ -71,6 +72,8 @@ These are **OpenVPN-dedicated credentials**, different from the website login. F
 mkdir -p /volume1/docker/rkz-vpn/openvpn
 # → drop the .ovpn file and credentials.txt there (2 lines: login then password)
 sudo chmod 600 /volume1/docker/rkz-vpn/openvpn/credentials.txt
+# Transmission settings: copy the template into the /config volume, then edit it
+cp configuration/settings.json.example /volume1/docker/transmission-home/settings.json
 ```
 
 Existing data folders are reused as is:
@@ -84,7 +87,7 @@ volumes:
 
 ### 3. Configure the RPC
 
-In `settings.default.json`, before the build, replace:
+The settings file is the one you just copied to `/volume1/docker/transmission-home/settings.json` (if you are reusing a `/volume1/docker/transmission-home` folder from a previous setup, it already contains a `settings.json` — review it instead of overwriting it). Replace:
 
 - `"rpc-password": "changeme"` → the desired password (Transmission hashes it itself on first start),
 - `"rpc-username": "username"` → the desired username.
@@ -92,10 +95,12 @@ In `settings.default.json`, before the build, replace:
 ### 4. Build + run
 
 ```bash
-cd /volume1/docker/rkz-transmission-openvpn
+cd /volume1/docker/rkz-transmission-openvpn/docker
 docker compose build
 docker compose up -d
 ```
+
+In Container Manager, point the compose file to `docker/docker-compose.yml`.
 
 ### 5. Remote client (Windows) and Homepage
 
@@ -163,15 +168,15 @@ Everything lands on stdout — in Container Manager: container → **Log** tab (
 | `ZOMBIE_THRESHOLD` (env) | Consecutive failed pings through `tun0` before forcing a reconnect of a "zombie" tunnel; `0` disables the probe | `3` |
 | `RETRY_DELAY_MAX` (env) | Cap of the exponential backoff between reconnect attempts (seconds) | `60` |
 | `TZ` (docker-compose.yml) | Timezone of `vpn-status.json` timestamps and logs (needs tzdata) | `Europe/Paris` |
-| `settings.default.json` | Transmission config used on **first** boot | copied to `/config/settings.json` if absent |
+| `configuration/settings.json.example` | Template for the Transmission settings — copy it to your `/config` volume as `settings.json` and edit it | — |
 
-For the OpenVPN and Transmission settings themselves (what to put in the `.ovpn`, what each Transmission knob does, how to change settings after the first boot), see [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
+For the OpenVPN and Transmission settings themselves (what to put in the `.ovpn`, what each Transmission knob does, how to change settings after the first boot), see [configuration/README.md](configuration/README.md).
 
 ## Reusing this project
 
 The image contains **no secret**: the `.ovpn` file, the OpenVPN credentials and the RPC password are mounted/configured at runtime, never copied into the image. Every deployment uses its own VPN subscription (`.ovpn` + dedicated credentials — most providers limit simultaneous connections per account).
 
-The Synology paths in `docker-compose.yml` are examples: set `VOL_CONFIG`, `VOL_TORRENTS` and `VOL_OPENVPN` in a `.env` file (defaults are the original Synology's). Builds are checked on every push by a GitHub Actions CI (shellcheck, JSON, build + smoke test).
+The Synology paths in `docker-compose.yml` are examples: set `VOL_CONFIG`, `VOL_TORRENTS` and `VOL_OPENVPN` in a `docker/.env` file (defaults are the original Synology's). Builds are checked on every push by a GitHub Actions CI (shellcheck, JSON, build + smoke test).
 
 Multi-arch build (amd64 + arm64):
 

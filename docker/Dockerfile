@@ -20,8 +20,7 @@ RUN addgroup -g 1000 rakiz && \
     mkdir -p /config /data/completed /data/incomplete /data/watch && \
     chown -R rakiz:rakiz /data
 
-COPY entrypoint.sh /entrypoint.sh
-COPY settings.default.json /settings.default.json
+COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
 # Only the RPC port is meant to be reached from the host. Peer traffic

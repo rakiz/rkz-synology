@@ -11,21 +11,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: shellcheck
-        run: shellcheck entrypoint.sh
+        run: shellcheck docker/entrypoint.sh
 
   json:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - name: JSON validation
-        run: python3 -m json.tool settings.default.json > /dev/null
+        run: python3 -m json.tool configuration/settings.json.example > /dev/null
 
   build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - name: Build the image
-        run: docker build -t rkz-transmission-openvpn:ci .
+        run: docker build -f docker/Dockerfile -t rkz-transmission-openvpn:ci .
       - name: Smoke test - without an .ovpn the container must exit with code 1
         run: |
           set +e

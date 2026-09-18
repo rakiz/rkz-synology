@@ -1,6 +1,10 @@
 services:
   rkz-transmission-openvpn:
-    build: .
+    build:
+      # context stays the repository root: the Dockerfile copies the
+      # Transmission template from configuration/
+      context: ..
+      dockerfile: docker/Dockerfile
     image: rkz/transmission-openvpn:1.0
     container_name: rkz-transmission-openvpn
     cap_add:
