@@ -136,7 +136,7 @@ docker exec rkz-transmission-openvpn cat /config/vpn-status.json
 }
 ```
 
-The IP shown must be the VPN server's, not the ISP/router IP. If the tunnel drops, `tunnel_up` immediately turns to `false` (state `reconnecting...`) — no misleading frozen state while reconnecting. The public IP is refreshed on first connect, after each reconnect and once an hour.
+The IP shown must be the VPN server's, not the ISP/router IP. If the tunnel drops, `tunnel_up` immediately turns to `false` (state `reconnecting...`) — no misleading frozen state while reconnecting. The public IP is refreshed on first connect, after each reconnect and once an hour. Right after boot, the IP may stay `unavailable` for ~30-60 s (the tunnel needs a moment to pass traffic) — it fills in on its own, no restart needed.
 
 ## Reading the logs
 

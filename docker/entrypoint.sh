@@ -84,7 +84,10 @@ start_vpn() {
   echo "[rkz-vpn] $(date '+%F %T') INFO: starting OpenVPN tunnel..."
   pkill openvpn 2>/dev/null
   sleep 1
-  openvpn --config "$OVPN_FILE" \
+  # provider .ovpn files reference their certs relatively (ca ca.crt) - run
+  # from the .ovpn's own folder so they always resolve, whatever the provider
+  openvpn --cd "$(dirname "$OVPN_FILE")" \
+          --config "$OVPN_FILE" \
           --auth-user-pass "$CREDS_FILE" \
           --daemon \
           --log "$OPENVPN_LOG"
@@ -117,8 +120,14 @@ apply_killswitch() {
   echo "[rkz-vpn] INFO: applying kill switch (IPv4 + IPv6)..."
 
   VPN_REMOTE_LINE=$(grep -E '^remote ' "$OVPN_FILE" | head -1)
-  VPN_REMOTE_IP=$(echo "$VPN_REMOTE_LINE" | awk '{print $2}')
+  VPN_REMOTE_HOST=$(echo "$VPN_REMOTE_LINE" | awk '{print $2}')
   VPN_REMOTE_PORT=$(echo "$VPN_REMOTE_LINE" | awk '{print $3}')
+  # resolve the server name now (tunnel is up, DNS works): the firewall
+  # rules need an IP, and a failed resolution would silently leave the VPN
+  # server unreachable for the NEXT reconnect - the kill switch must never
+  # strangle the tunnel it protects
+  VPN_REMOTE_IP=$(getent hosts "$VPN_REMOTE_HOST" 2>/dev/null | awk '{print $1; exit}')
+  [ -z "$VPN_REMOTE_IP" ] && VPN_REMOTE_IP="$VPN_REMOTE_HOST"
   [ -z "$VPN_REMOTE_PORT" ] && VPN_REMOTE_PORT="1194"
   # normalize udp4/tcp4/udp6/tcp6/tcp-client -> udp/tcp (the only values `iptables -p` accepts)
   VPN_PROTO=$(grep -E '^proto ' "$OVPN_FILE" | head -1 | awk '{print $2}' | sed -E 's/(udp|tcp).*/\1/')
@@ -203,7 +212,7 @@ write_status() {
   # public IP-echo service, and so the file stays a trustworthy check.
   if [ "$state_label" = "true" ] && [ -z "$ip_label" ]; then
     if [ -z "$CURRENT_IP" ] || [ "$PREV_STATE" != "true" ] || [ "$STATUS_TICKS" -ge 120 ]; then
-      FETCHED_IP=$(wget -qO- --timeout=5 https://ifconfig.me 2>/dev/null)
+      FETCHED_IP=$(wget -qO- --timeout=5 https://ifconfig.me/ip 2>/dev/null)
       if [ -n "$FETCHED_IP" ] || [ -z "$CURRENT_IP" ]; then
         CURRENT_IP="$FETCHED_IP"
       fi
@@ -218,6 +227,7 @@ write_status() {
 
   # written into the /config volume: readable from the NAS file browser,
   # no docker skills needed to know whether the VPN is doing its job
+  ip_label=$(echo "$ip_label" | tr -d '"\n')
   cat > /config/vpn-status.json <<EOF
 {
   "last_check": "$(date -Iseconds)",
@@ -303,6 +313,17 @@ STREAMER_PID=$!
 #    at this point no torrent client is running yet (no leak possible).
 # -----------------------------------------------------------------------------
 disable_ipv6_sysctl
+
+# DNS: use public resolvers, reached THROUGH the tunnel when it is up, and
+# directly when it is down (the kill switch allows DNS out for exactly
+# that). Host-provided resolvers (Docker's 127.0.0.11, Rancher/LAN proxies)
+# are unreachable as soon as the tunnel routes everything away - relying on
+# them silently breaks name resolution, and with it the kill switch rule
+# that needs the VPN server's hostname resolved.
+cat > /etc/resolv.conf <<EOF
+nameserver 1.1.1.1
+nameserver 9.9.9.9
+EOF
 
 reconnect || graceful_shutdown
 
