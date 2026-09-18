@@ -65,6 +65,8 @@ echo "[rkz-vpn] INFO: config file in use: $OVPN_FILE"
 # checks it at least once per second, so `docker stop` is honored quickly
 # and Transmission still gets the time to flush its state cleanly.
 # -----------------------------------------------------------------------------
+# called via `trap` on TERM/INT - shellcheck can't see that, hence SC2317
+# shellcheck disable=SC2317
 term_handler() {
   echo "[rkz-vpn] $(date '+%F %T') Stop requested."
   STOPPING=1
