@@ -61,6 +61,15 @@ rkz-transmission-openvpn/
 
 ## Installation (Synology)
 
+### 0. Get the repository on the NAS
+
+```bash
+ssh admin@NAS
+git clone https://github.com/rakiz/rkz-transmission-openvpn.git /volume1/docker/rkz-transmission-openvpn
+```
+
+(no git package on the NAS? Download the repository zip from GitHub and uncompress it at the same path — same result.)
+
 ### 1. Provider OpenVPN credentials
 
 These are **OpenVPN-dedicated credentials**, different from the website login. For CyberGhost: log in at [my.cyberghostvpn.com](https://my.cyberghostvpn.com), "OpenVPN manual configuration" section, download the `.ovpn` of the desired country and note the OpenVPN login/password provided there. See [configuration/README.md](configuration/README.md) for the full walkthrough.
@@ -120,6 +129,34 @@ No configuration change on the client side: same host, same RPC URL, same creden
       password: YOUR_RPC_PASSWORD_IN_CLEAR
       rpcUrl: /transmission/
 ```
+
+### Reusing an existing Transmission setup (coming from haugene)
+
+`/volume1/docker/transmission-home` is reused as is: `settings.json`, the `.resume` files and the torrent list survive untouched, and the RPC credentials your client already uses stay valid — nothing to change client-side. Two things to check in `settings.json`:
+
+- `"bind-address-ipv4"`: the haugene setup often froze it to the NordVPN tunnel IP — set it back to `"0.0.0.0"` (the tunnel IP is dynamic here);
+- `"download-dir"` / `"incomplete-dir"` / `"watch-dir"`: keep whatever they point at (the compose maps `/volume1/torrents` to `/data` the same way).
+
+`/volume1/torrents` is reused as is too.
+
+**Before starting the new container, stop and remove the old one** (Container Manager: stop + delete the container, keep its folders) — two daemons cannot share the same `/config` folder.
+
+## Updating later
+
+Configuration and data live on NAS volumes — updating the code or the image never touches them (`settings.json`, `.resume` files, torrents all survive).
+
+```bash
+ssh admin@NAS
+cd /volume1/docker/rkz-transmission-openvpn
+git pull
+cd docker
+docker compose build
+docker compose up -d
+```
+
+- `settings.json` is never overwritten by an update: if a new version ships a new template, diff it manually against `configuration/settings.json.example` and port what you want.
+- To roll back: `git checkout <previous commit or tag>` then rebuild.
+- Old images can be cleaned with `docker image prune`.
 
 ## Checking it works
 
