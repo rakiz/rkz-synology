@@ -5,6 +5,8 @@ README.md
 LICENSE
 openvpn/credentials.txt
 openvpn/*.ovpn
+openvpn/*.crt
+openvpn/*.key
 configuration/credentials.txt
 configuration/*.ovpn
 .DS_Store
