@@ -1,14 +1,16 @@
 FROM alpine:3.20
 
-# Minimal package set: openvpn + transmission-daemon + su-exec for the
-# privilege drop + iptables/ip6tables for the kill switch + procps for
-# pgrep/pkill in the watchdog + ca-certificates for the public-IP check
-# + tzdata for meaningful timestamps.
+# Minimal package set: openvpn + transmission-daemon + setpriv (util-linux)
+# for the privilege drop, with proper supplementary-group init +
+# iptables/ip6tables for the kill switch + procps for pgrep/pkill in the
+# watchdog + ca-certificates for the public-IP check + tzdata for meaningful
+# timestamps.
 RUN apk add --no-cache \
     openvpn \
     transmission-daemon \
-    su-exec \
+    util-linux \
     iptables \
+    iptables-legacy \
     ip6tables \
     procps \
     ca-certificates \
@@ -17,6 +19,7 @@ RUN apk add --no-cache \
 # Unprivileged user for transmission-daemon (only OpenVPN needs root/NET_ADMIN)
 RUN addgroup -g 1000 rakiz && \
     adduser -D -u 1000 -G rakiz rakiz && \
+    addgroup rakiz openvpn 2>/dev/null || true && \
     mkdir -p /config /data/completed /data/incomplete /data/watch && \
     chown -R rakiz:rakiz /data
 

@@ -58,7 +58,7 @@ Any other classic OpenVPN provider works the same way: drop its `.ovpn` and its 
 |---|---|
 | `rpc-username` / `rpc-password` | credentials used by your Windows RPC client and the Homepage widget |
 | `rpc-url` (`/transmission/`) | keep consistent with the client and the Homepage `rpcUrl` |
-| `rpc-port` (`9091`) | published as-is on the host (`9091:9091`) — clients connect to `NAS_IP:9091` |
+| `rpc-port` (`9091`) | published as `59091` on the host — clients connect to `NAS_IP:59091` |
 | `download-dir` (`/data/completed`) | finished torrents (host: `/volume1/torrents/completed`) |
 | `incomplete-dir` + `incomplete-dir-enabled` | partial downloads (host: `/volume1/torrents/incomplete`) |
 | `watch-dir` (`/data/watch`) + enabled | drop a `.torrent` file there → auto-added |

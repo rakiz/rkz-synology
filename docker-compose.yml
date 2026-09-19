@@ -10,6 +10,11 @@ services:
     cap_add:
       - NET_ADMIN
       - DAC_OVERRIDE
+    # The NAS data folders are gated by Synology ACLs that already allow the
+    # "administrators" group: joining it grants the unprivileged Transmission
+    # the access the raw UIDs don't have
+    group_add:
+      - "101"
     environment:
       # Timestamps in vpn-status.json and logs use this timezone (needs tzdata)
       - TZ=Europe/Paris
@@ -18,7 +23,7 @@ services:
     # Publishing it would open a useless docker-proxy on the host (leak
     # vector) with no benefit.
     ports:
-      - "9091:9091"
+      - "59091:9091"
     # Cap the log files: the streamed [openvpn] lines are verbose, and
     # without rotation they would grow unbounded
     logging:

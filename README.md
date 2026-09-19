@@ -9,11 +9,11 @@ BitTorrent client **Transmission** behind an **OpenVPN** tunnel, in a single lig
 │  │  entrypoint.sh                                                          │   │
 │  │    ├─ OpenVPN ──► tun0  (your .ovpn file, mounted - provider-agnostic)  │   │
 │  │    ├─ iptables/ip6tables kill switch                                    │   │
-│  │    ├─ Transmission (non-root, via su-exec)                              │   │
+│  │    ├─ Transmission (non-root, via setpriv)                             │   │
 │  │    └─ Watchdog: tunnel dead or zombie? → reconnect + re-apply kill      │   │
 │  │         switch, in a loop, with no human intervention                   │   │
 │  └──────────────────────────────────────────────────────────────────────────┘   │
-│         │ RPC 9091                      │ /config/vpn-status.json              │
+│         │ RPC 59091                      │ /config/vpn-status.json              │
 │         ▼                                ▼                                     │
 │   Windows client / Homepage widget   Visual health check                       │
 └────────────────────────────────────────────────────────────────────────────────┘
@@ -24,13 +24,9 @@ BitTorrent client **Transmission** behind an **OpenVPN** tunnel, in a single lig
 - **Brings up an OpenVPN tunnel** from a single `.ovpn` file mounted as a volume. No provider is hard-coded: CyberGhost today, another one tomorrow, without changing a line of code.
 - **iptables kill switch**: `INPUT`/`OUTPUT`/`FORWARD` policies set to `DROP`; only the loopback, `tun0`, the private ranges (LAN, to keep RPC reachable) and the VPN server itself are allowed. The same treatment is applied to **IPv6** (`ip6tables`), completed by a sysctl that disables IPv6 entirely as defense in depth (useful if the host lacks the `ip6_tables` module). LAN access is limited to the RPC port; the only requests allowed outside the tunnel are DNS queries (required for reconnection) — never torrent traffic.
 - **Self-repair**: a watchdog wakes up every second and runs real checks every 30 s: `tun0` present and OpenVPN alive. If not: reconnect in a loop, re-apply the kill switch, update the status file. The tunnel is also probed through `tun0` (ping): a tunnel that is alive but carries no traffic is reconnected after `ZOMBIE_THRESHOLD` consecutive failures.
-- **Non-root Transmission**: OpenVPN runs as root (required for `NET_ADMIN`/`tun0`), Transmission is started through `su-exec` with a dedicated user.
+- **Non-root Transmission**: OpenVPN runs as root (required for `NET_ADMIN`/`tun0`), Transmission is started through `setpriv --init-groups` with a dedicated user — the group initialization matters: on Synology, the data folders' ACLs allow the GID 101 group, which the user must keep after the privilege drop.
 - **Status file** `/config/vpn-status.json` (public IP seen, timestamp, tunnel state): check that it works without having to look actively.
 - **Clean shutdown**: if Transmission dies, the container exits and Docker restarts it (`restart: unless-stopped`). On `docker stop`, the signal is handled within ~1 s, Transmission gets up to 20 s to flush its `.resume`/`settings.json` files, and `stop_grace_period: 30s` keeps Docker from cutting the procedure short.
-
-## Why this project
-
-Replacement for an old `haugene/docker-transmission-openvpn` setup, image frozen since 2023, which masked regular crashes behind an automatic restart without ever fixing them. Here: simple code (~300 lines of shell), fully understood, updated only when decided — no dependency on a third-party project (neither haugene, nor gluetun).
 
 ## Architecture choices
 
@@ -39,7 +35,7 @@ Replacement for an old `haugene/docker-transmission-openvpn` setup, image frozen
 | **Plain Alpine 3.20**, not `linuxserver/transmission` | linuxserver ships s6-overlay (multi-process supervision, PUID/PGID, init scripts) which adds nothing for a simple startup flow. Image of a few dozen MB instead of 100+. |
 | **OpenVPN, not WireGuard** | Synology DSM kernels (3.10/4.4) usually lack the WireGuard kernel module and Synology locks third-party module loading on most models. OpenVPN works with just the `NET_ADMIN` capability. |
 | **Kill switch by IP ranges, not by interface name** | The container's network interface name is not guaranteed (`eth0`, `br-*` depending on DSM); the rules match private IP ranges, not an interface name. |
-| **Hand-written entry script** | ~300 lines of shell understood end to end, rather than a third-party abstraction layer that is itself a source of bugs (open issues on haugene and gluetun specifically for CyberGhost). |
+| **Hand-written entry script** | ~650 lines of POSIX sh understood end to end, no third-party abstraction layer to trust or update. |
 | **Peer port 51413 not published** | Intentional: peers reach the client through the tunnel (`tun0`). Publishing it on the host is useless (CyberGhost has no port forwarding) and is a leak vector. |
 | **All configuration comes from volumes** | The image contains no settings: the `.ovpn`, `credentials.txt` and `settings.json` all live on the NAS — one single mental model, and manual tweaks survive image upgrades by design. |
 
@@ -49,8 +45,8 @@ Replacement for an old `haugene/docker-transmission-openvpn` setup, image frozen
 rkz-transmission-openvpn/
 ├── docker-compose.yml              # Container Manager / docker compose deployment
 ├── docker/
-│   ├── Dockerfile                  # Alpine 3.20 + openvpn, transmission-daemon, su-exec, iptables, ip6tables, procps, ca-certificates, tzdata
-│   └── entrypoint.sh               # Tunnel + kill switch + watchdog (~300 lines of POSIX sh)
+│   ├── Dockerfile                  # Alpine 3.20 + openvpn, transmission-daemon, util-linux (setpriv), iptables, ip6tables, iptables-legacy, procps, ca-certificates, tzdata
+│   └── entrypoint.sh               # Tunnel + kill switch + watchdog (~650 lines of POSIX sh)
 ├── configuration/
 │   ├── README.md                   # How to configure OpenVPN and Transmission
 │   ├── settings.json.example       # Template for the Transmission settings (copy it to your /config volume)
@@ -118,18 +114,18 @@ docker compose up -d --build
 
 ### 5. Remote client (Windows) and Homepage
 
-Same URL scheme as any Transmission RPC client: `http://NAS_IP:9091`, RPC URL `/transmission/`.
+Same URL scheme as any Transmission RPC client: `http://NAS_IP:59091`, RPC URL `/transmission/`.
 
-- **RPC client**: `http://NAS_IP:9091`, RPC URL `/transmission/`
+- **RPC client**: `http://NAS_IP:59091`, RPC URL `/transmission/`
 - **Homepage widget** (gethomepage/homepage):
 
 ```yaml
 - Transmission:
     icon: transmission.png
-    href: http://NAS_IP:9091
+    href: http://NAS_IP:59091
     widget:
       type: transmission
-      url: http://NAS_IP:9091
+      url: http://NAS_IP:59091
       username: username
       password: YOUR_RPC_PASSWORD_IN_CLEAR
       rpcUrl: /transmission/

@@ -82,7 +82,15 @@ trap term_handler TERM INT
 # credentials, DNS, unreachable server...).
 start_vpn() {
   echo "[rkz-vpn] $(date '+%F %T') INFO: starting OpenVPN tunnel..."
-  pkill openvpn 2>/dev/null
+  # SIGTERM, not SIGKILL: OpenVPN deletes its pushed routes on a clean exit.
+  # Killed hard, the redirect-gateway routes survive and the next DNS query
+  # is blackholed into a dead tun0 - a self-inflicted reconnection deadlock.
+  pkill -TERM openvpn 2>/dev/null
+  for _k in 1 2 3 4 5 6 7 8 9 10; do
+    pgrep openvpn >/dev/null 2>&1 || break
+    sleep 1
+  done
+  pgrep openvpn >/dev/null 2>&1 && pkill -KILL openvpn 2>/dev/null
   sleep 1
   # provider .ovpn files reference their certs relatively (ca ca.crt) - run
   # from the .ovpn's own folder so they always resolve, whatever the provider
@@ -105,86 +113,303 @@ start_vpn() {
   return 1
 }
 
-# apply_killswitch: default-deny firewall. Design, in order of importance:
-#   - traffic may only leave through tun0 (the tunnel), the loopback, or to
-#     the LAN on the RPC port - never directly through eth0;
-#   - the VPN server itself must stay reachable, so a broken tunnel can be
-#     re-established without lifting the kill switch;
-#   - DNS must stay available because OpenVPN re-resolves the server on
-#     reconnection: DNS queries are the only packets allowed out of eth0,
-#     and answers to anything we sent are accepted back (state rule);
-#   - the same denial is applied to IPv6, with a sysctl disabling IPv6
-#     entirely as defense in depth: the tunnel is IPv4-only and some hosts
-#     lack the ip6_tables kernel module.
+# -----------------------------------------------------------------------------
+# Kill switch.
+#
+# Design:
+#   1. STATIC: installed once, before OpenVPN is ever started, never rebuilt -
+#      there is no instant where the policy is DROP without its allow rules.
+#   2. TRANSPORT-BASED, not address-based: "udp/443 out of the physical
+#      interface", not "udp/443 to <server IP>" - providers hand out
+#      round-robin pools spanning several /24s; any address allow-list goes
+#      stale the moment the client reconnects elsewhere in the pool.
+#   3. Each hole is closed with `-m owner --uid-owner 0`: OpenVPN runs as
+#      root, Transmission as uid 1000 - Transmission structurally cannot use
+#      them. Nothing torrent-related ever leaves outside tun+.
+#   4. STATELESS on the critical path (--sport instead of -m state) and
+#      applied ATOMICALLY with iptables-restore.
+#   5. The nft backend is neutralized first: nft and legacy are two
+#      INDEPENDENT hook sets in the same network namespace - a packet must
+#      be accepted by BOTH, and on old kernels the nft backend keeps
+#      default-DROP policies it could never pair with rules.
+# -----------------------------------------------------------------------------
+
+KS_LAN_RANGES="10.0.0.0/8 172.16.0.0/12 192.168.0.0/16"
+KS_DNS_SERVERS="1.1.1.1 9.9.9.9"
+IPT=""
+IPT6=""
+IPT_RESTORE=""
+IPT6_RESTORE=""
+WAN_IF="eth0"
+OWNER_MATCH=""
+RPC_PORT="9091"
+
+select_firewall_tools() {
+  IPT=$(command -v iptables-legacy || command -v iptables)
+  IPT6=$(command -v ip6tables-legacy || command -v ip6tables)
+  IPT_RESTORE=$(command -v iptables-legacy-restore || command -v iptables-restore)
+  IPT6_RESTORE=$(command -v ip6tables-legacy-restore || command -v ip6tables-restore)
+
+  # never drive one backend with the other's restore tool
+  case "$IPT" in
+    *-legacy) case "$IPT_RESTORE" in *-legacy-restore) ;; *) IPT_RESTORE="" ;; esac ;;
+  esac
+  case "$IPT6" in
+    *-legacy) case "$IPT6_RESTORE" in *-legacy-restore) ;; *) IPT6_RESTORE="" ;; esac ;;
+  esac
+
+  case "$IPT" in
+    *-legacy) echo "[rkz-vpn] INFO: firewall backend: legacy ($IPT)." ;;
+    *) echo "[rkz-vpn] WARN: iptables-legacy missing, falling back to $IPT."
+       echo "[rkz-vpn] WARN: on old kernels the nft backend rejects -p/-m rules." ;;
+  esac
+}
+
+# nft and legacy are two independent netfilter hook sets sharing one netns:
+# a leftover default-DROP nft chain vetoes every legacy ACCEPT. Reset it.
+neutralize_nft_backend() {
+  nft_v4=$(command -v iptables-nft 2>/dev/null)
+  nft_v6=$(command -v ip6tables-nft 2>/dev/null)
+  # if the -nft aliases are absent but -legacy exists, the bare names ARE nft
+  if [ -z "$nft_v4" ] && command -v iptables-legacy >/dev/null 2>&1; then
+    nft_v4=$(command -v iptables 2>/dev/null)
+    nft_v6=$(command -v ip6tables 2>/dev/null)
+  fi
+
+  for b in $nft_v4 $nft_v6; do
+    # -P and -F carry no xtables extension: they are the only two operations
+    # that still work when nft_compat cannot load xt_tcpudp/xt_state
+    for c in INPUT OUTPUT FORWARD; do
+      "$b" -P "$c" ACCEPT 2>/dev/null
+    done
+    "$b" -F 2>/dev/null
+    "$b" -X 2>/dev/null
+
+    leftover=$("$b" -S 2>/dev/null | grep -v -e '^-P [A-Z]* ACCEPT$' -e '^$')
+    if [ -n "$leftover" ]; then
+      echo "[rkz-vpn] WARN: the nft backend ($b) still enforces rules:"
+      echo "$leftover" | sed 's/^/[rkz-vpn]   /'
+      echo "[rkz-vpn] WARN: they apply IN ADDITION to the legacy ones and can"
+      echo "[rkz-vpn] WARN: veto them. Recreate the container to get a clean"
+      echo "[rkz-vpn] WARN: network namespace: 'docker compose down && up -d'"
+      echo "[rkz-vpn] WARN: ('docker restart' reuses the same netns)."
+    else
+      echo "[rkz-vpn] OK: nft backend neutralized ($b)."
+    fi
+  done
+}
+
+# The physical egress interface, read BEFORE OpenVPN touches the routing
+# table (while the default route still points at the docker gateway).
+detect_wan_if() {
+  WAN_IF=$(ip route show 2>/dev/null \
+           | awk '/^default/ {for (i = 1; i <= NF; i++) if ($i == "dev") {print $(i+1); exit}}')
+  [ -z "$WAN_IF" ] && WAN_IF="eth0"
+  echo "[rkz-vpn] INFO: physical egress interface: $WAN_IF"
+}
+
+# The RPC port is the user's, in the user's settings.json - never assumed.
+detect_rpc_port() {
+  RPC_PORT=$(sed -n 's/.*"rpc-port"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' \
+             /config/settings.json 2>/dev/null | head -1)
+  [ -z "$RPC_PORT" ] && RPC_PORT="9091"
+  echo "[rkz-vpn] INFO: RPC port opened to the LAN: $RPC_PORT"
+}
+
+# iptables-restore commits the whole table in ONE transaction: a single
+# unsupported match makes the ENTIRE ruleset fail. So xt_owner is probed
+# before it is ever written into the payload.
+probe_owner_match() {
+  if $IPT -A OUTPUT -o "$WAN_IF" -p udp --dport 1 -m owner --uid-owner 0 -j ACCEPT 2>/dev/null; then
+    $IPT -D OUTPUT -o "$WAN_IF" -p udp --dport 1 -m owner --uid-owner 0 -j ACCEPT 2>/dev/null
+    OWNER_MATCH="-m owner --uid-owner 0"
+    echo "[rkz-vpn] OK: xt_owner available - the VPN and DNS holes are"
+    echo "[rkz-vpn]     restricted to uid 0 (OpenVPN); Transmission (uid 1000)"
+    echo "[rkz-vpn]     structurally cannot use them."
+  else
+    OWNER_MATCH=""
+    echo "[rkz-vpn] WARN: xt_owner unavailable on this kernel."
+    echo "[rkz-vpn] WARN: the udp VPN port and DNS stay open to every uid in"
+    echo "[rkz-vpn] WARN: the container. Everything else is still denied."
+  fi
+}
+
+# "<proto> <port>" for every `remote` line of the .ovpn, deduplicated.
+# We allow the VPN TRANSPORT, never a server address: provider pools are
+# round-robin across several /24s, so any address allow-list is stale as
+# soon as the client reconnects elsewhere - a stale allow-list deadlocks
+# reconnection.
+vpn_transport_rules() {
+  default_proto=$(grep -Ei '^[[:space:]]*proto[[:space:]]' "$OVPN_FILE" 2>/dev/null \
+                  | head -1 | awk '{print tolower($2)}' | sed -E 's/^(udp|tcp).*/\1/')
+  case "$default_proto" in udp|tcp) ;; *) default_proto="udp" ;; esac
+
+  default_port=$(grep -Ei '^[[:space:]]*port[[:space:]]' "$OVPN_FILE" 2>/dev/null \
+                 | head -1 | awk '{print $2}')
+  case "$default_port" in ''|*[!0-9]*) default_port="1194" ;; esac
+
+  grep -Ei '^[[:space:]]*remote[[:space:]]' "$OVPN_FILE" 2>/dev/null \
+  | while read -r _kw _host rport rproto _rest; do
+      case "$rport" in ''|*[!0-9]*) rport="$default_port" ;; esac
+      case "$(echo "$rproto" | tr 'A-Z' 'a-z')" in
+        udp*) rproto="udp" ;;
+        tcp*) rproto="tcp" ;;
+        *)    rproto="$default_proto" ;;
+      esac
+      echo "$rproto $rport"
+    done | sort -u
+}
+
+emit_ruleset_v4() {
+  echo "*filter"
+  echo ":INPUT DROP [0:0]"
+  echo ":FORWARD DROP [0:0]"
+  echo ":OUTPUT DROP [0:0]"
+
+  # --- loopback ---
+  echo "-A INPUT -i lo -j ACCEPT"
+  echo "-A OUTPUT -o lo -j ACCEPT"
+
+  # --- the tunnel: the only unrestricted path in or out. tun+ (not tun0)
+  #     so the rules are valid before the device exists and survive a
+  #     device rename. Everything Transmission does goes through here. ---
+  echo "-A INPUT -i tun+ -j ACCEPT"
+  echo "-A OUTPUT -o tun+ -j ACCEPT"
+
+  # --- VPN transport out of the physical interface. Stateless on purpose
+  #     (--sport on the way back instead of -m state): no dependency on
+  #     nf_conntrack/xt_state being loadable on this kernel. ---
+  vpn_transport_rules | while read -r kp kport; do
+    echo "-A OUTPUT -o $WAN_IF -p $kp --dport $kport $OWNER_MATCH -j ACCEPT"
+    echo "-A INPUT -i $WAN_IF -p $kp --sport $kport -j ACCEPT"
+  done
+
+  # --- DNS, only to the two resolvers we forced into resolv.conf, only for
+  #     uid 0. Needed solely so OpenVPN can re-resolve its remote while the
+  #     tunnel is down; when the tunnel is up these queries take tun+ and
+  #     never match these rules. Transmission can never DNS-leak here. ---
+  for ksns in $KS_DNS_SERVERS; do
+    echo "-A OUTPUT -o $WAN_IF -d $ksns -p udp --dport 53 $OWNER_MATCH -j ACCEPT"
+    echo "-A OUTPUT -o $WAN_IF -d $ksns -p tcp --dport 53 $OWNER_MATCH -j ACCEPT"
+    echo "-A INPUT -i $WAN_IF -s $ksns -p udp --sport 53 -j ACCEPT"
+    echo "-A INPUT -i $WAN_IF -s $ksns -p tcp --sport 53 -j ACCEPT"
+  done
+
+  # --- LAN: the RPC port only, and only from RFC1918. Peer traffic is
+  #     tun+-only, so nothing torrent-related is ever exposed on the LAN. ---
+  for ksr in $KS_LAN_RANGES; do
+    echo "-A INPUT -i $WAN_IF -s $ksr -p tcp --dport $RPC_PORT -j ACCEPT"
+    echo "-A OUTPUT -o $WAN_IF -d $ksr -p tcp --sport $RPC_PORT -j ACCEPT"
+  done
+
+  echo "COMMIT"
+}
+
+emit_ruleset_v6() {
+  echo "*filter"
+  echo ":INPUT DROP [0:0]"
+  echo ":FORWARD DROP [0:0]"
+  echo ":OUTPUT DROP [0:0]"
+  echo "-A INPUT -i lo -j ACCEPT"
+  echo "-A OUTPUT -o lo -j ACCEPT"
+  for ksr6 in fe80::/10 fc00::/7; do
+    echo "-A INPUT -s $ksr6 -j ACCEPT"
+    echo "-A OUTPUT -d $ksr6 -j ACCEPT"
+  done
+  echo "COMMIT"
+}
+
+# Ordered fallback for hosts without iptables-legacy-restore: policies are
+# left ACCEPT while the rules go in and only flipped to DROP at the very
+# end, so the box is never default-deny without its allow rules.
+apply_ruleset_sequential() {
+  _bin="$1"
+  _emit="$2"
+  for c in INPUT OUTPUT FORWARD; do
+    "$_bin" -P "$c" ACCEPT 2>/dev/null
+  done
+  "$_bin" -F 2>/dev/null
+  "$_emit" | grep '^-A ' | while read -r line; do
+    # shellcheck disable=SC2086
+    $_bin $line 2>/dev/null || echo "[rkz-vpn] WARN: rule rejected: $_bin $line"
+  done
+  for c in FORWARD INPUT OUTPUT; do
+    "$_bin" -P "$c" DROP 2>/dev/null
+  done
+}
+
 apply_killswitch() {
   echo "[rkz-vpn] INFO: applying kill switch (IPv4 + IPv6)..."
 
-  VPN_REMOTE_LINE=$(grep -E '^remote ' "$OVPN_FILE" | head -1)
-  VPN_REMOTE_HOST=$(echo "$VPN_REMOTE_LINE" | awk '{print $2}')
-  VPN_REMOTE_PORT=$(echo "$VPN_REMOTE_LINE" | awk '{print $3}')
-  # resolve the server name now (tunnel is up, DNS works): the firewall
-  # rules need an IP, and a failed resolution would silently leave the VPN
-  # server unreachable for the NEXT reconnect - the kill switch must never
-  # strangle the tunnel it protects
-  VPN_REMOTE_IP=$(getent hosts "$VPN_REMOTE_HOST" 2>/dev/null | awk '{print $1; exit}')
-  [ -z "$VPN_REMOTE_IP" ] && VPN_REMOTE_IP="$VPN_REMOTE_HOST"
-  [ -z "$VPN_REMOTE_PORT" ] && VPN_REMOTE_PORT="1194"
-  # normalize udp4/tcp4/udp6/tcp6/tcp-client -> udp/tcp (the only values `iptables -p` accepts)
-  VPN_PROTO=$(grep -E '^proto ' "$OVPN_FILE" | head -1 | awk '{print $2}' | sed -E 's/(udp|tcp).*/\1/')
-  [ -z "$VPN_PROTO" ] && VPN_PROTO="udp"
+  select_firewall_tools
+  neutralize_nft_backend
+  detect_wan_if
+  detect_rpc_port
+  probe_owner_match
 
   # --- IPv4 ---
-  iptables -F
-  iptables -P INPUT DROP
-  iptables -P OUTPUT DROP
-  iptables -P FORWARD DROP
+  if [ -n "$IPT_RESTORE" ] && emit_ruleset_v4 | $IPT_RESTORE 2>/dev/null; then
+    echo "[rkz-vpn] OK: IPv4 ruleset committed atomically ($IPT_RESTORE)."
+  else
+    echo "[rkz-vpn] WARN: atomic restore unavailable or refused, applying"
+    echo "[rkz-vpn] WARN: the rules one by one."
+    apply_ruleset_sequential "$IPT" emit_ruleset_v4
+  fi
 
-  iptables -A INPUT -i lo -j ACCEPT
-  iptables -A OUTPUT -o lo -j ACCEPT
-  iptables -A INPUT -i tun0 -j ACCEPT
-  iptables -A OUTPUT -o tun0 -j ACCEPT
+  # --- IPv6 ---
+  if [ -n "$IPT6" ]; then
+    if [ -n "$IPT6_RESTORE" ] && emit_ruleset_v6 | $IPT6_RESTORE 2>/dev/null; then
+      echo "[rkz-vpn] OK: all IPv6 egress denied (loopback and link-local/ULA aside)."
+    else
+      apply_ruleset_sequential "$IPT6" emit_ruleset_v6
+      echo "[rkz-vpn] OK: IPv6 denial applied rule by rule."
+    fi
+  else
+    echo "[rkz-vpn] WARN: ip6tables unavailable (kernel module missing?);"
+    echo "[rkz-vpn] WARN: relying on the disable_ipv6 sysctl alone."
+  fi
 
-  # answers to connections we sent out (DNS replies and the like); without
-  # this rule they would be dropped by the INPUT DROP policy
-  iptables -A INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
+  verify_killswitch
+}
 
-  # LAN: only the RPC port is accepted - peer traffic goes through tun0
-  # exclusively, so nothing torrent-related is ever exposed on the LAN
-  for range in 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16; do
-    iptables -A INPUT -s "$range" -p tcp --dport 9091 -j ACCEPT
-    iptables -A OUTPUT -d "$range" -p tcp --sport 9091 -j ACCEPT
+# Printed once at startup: the effective ruleset in `docker logs` is the
+# difference between debugging this and guessing at it.
+verify_killswitch() {
+  ks_ok=1
+
+  for c in INPUT OUTPUT FORWARD; do
+    $IPT -S "$c" 2>/dev/null | grep -q -- "-P $c DROP" || {
+      echo "[rkz-vpn] ERROR: IPv4 $c policy is NOT DROP - the kill switch is not sealed."
+      ks_ok=0
+    }
+  done
+  $IPT -S OUTPUT 2>/dev/null | grep -q -- '-o tun+' || {
+    echo "[rkz-vpn] ERROR: no tun+ egress rule - the tunnel would carry nothing."
+    ks_ok=0
+  }
+  vpn_transport_rules | while read -r kp kport; do
+    $IPT -S OUTPUT 2>/dev/null | grep -q -- "--dport $kport" || \
+      echo "[rkz-vpn] ERROR: no $kp/$kport egress rule - OpenVPN cannot reach its server."
   done
 
-  if [ -n "$VPN_REMOTE_IP" ]; then
-    iptables -A OUTPUT -p "$VPN_PROTO" -d "$VPN_REMOTE_IP" --dport "$VPN_REMOTE_PORT" -j ACCEPT
-    iptables -A INPUT -p "$VPN_PROTO" -s "$VPN_REMOTE_IP" --sport "$VPN_REMOTE_PORT" -j ACCEPT
-  fi
+  echo "[rkz-vpn] INFO: effective IPv4 ruleset:"
+  $IPT -S 2>/dev/null | sed 's/^/[rkz-vpn]   /'
 
-  # outgoing DNS: required for reconnection (OpenVPN re-resolves the VPN
-  # server) and for the public-IP check. DNS queries are the only packets
-  # that ever leave outside the tunnel - never torrent traffic.
-  iptables -A OUTPUT -p udp --dport 53 -j ACCEPT
-  iptables -A OUTPUT -p tcp --dport 53 -j ACCEPT
-
-  # --- IPv6: the tunnel is IPv4-only, so rather than routing v6 through it
-  #     we deny all IPv6 egress; loopback and link-local/ULA stay open. ---
-  if command -v ip6tables >/dev/null 2>&1; then
-    ip6tables -F 2>/dev/null
-    ip6tables -P INPUT DROP 2>/dev/null
-    ip6tables -P OUTPUT DROP 2>/dev/null
-    ip6tables -P FORWARD DROP 2>/dev/null
-    ip6tables -A INPUT -i lo -j ACCEPT 2>/dev/null
-    ip6tables -A OUTPUT -o lo -j ACCEPT 2>/dev/null
-    for range6 in fc00::/7 fe80::/10; do
-      ip6tables -A INPUT -s "$range6" -j ACCEPT 2>/dev/null
-      ip6tables -A OUTPUT -d "$range6" -j ACCEPT 2>/dev/null
-    done
-    echo "[rkz-vpn] OK: ip6tables applied (all IPv6 egress denied except loopback and link-local/ULA)."
+  if [ "$ks_ok" = "1" ]; then
+    echo "[rkz-vpn] OK: kill switch active (default deny; out = tun+, lo,"
+    echo "[rkz-vpn]     VPN transport, DNS to $KS_DNS_SERVERS, RPC $RPC_PORT to the LAN)."
   else
-    echo "[rkz-vpn] WARN: ip6tables unavailable on this host (kernel module missing?)."
+    echo "[rkz-vpn] ERROR: kill switch INCOMPLETE - see the errors above."
   fi
+}
 
-  echo "[rkz-vpn] OK: kill switch active."
+# Called when a connection attempt fails: packet counters tell whether the
+# VPN transport rule was matched at all (nonzero = the legacy chain let the
+# packet through and something else dropped it, e.g. a leftover nft chain;
+# zero = the packet never matched, i.e. wrong interface/proto/port).
+dump_firewall_counters() {
+  echo "[rkz-vpn] INFO: OUTPUT chain counters (packet-level evidence):"
+  $IPT -L OUTPUT -v -n --line-numbers 2>/dev/null | sed 's/^/[rkz-vpn]   /'
 }
 
 disable_ipv6_sysctl() {
@@ -271,9 +496,16 @@ sleep_interruptible() {
 # reconnect: (re)establish the tunnel with exponential backoff (10s up to
 # RETRY_DELAY_MAX). Returns 1 if a stop was requested while retrying,
 # 0 otherwise.
+#
+# The kill switch is NOT reapplied here: it is static, installed once
+# before the first connection, and interface-based - it needs no knowledge
+# of the current session.
 reconnect() {
   write_status "false" "reconnecting..."
+  ks_attempts=0
   until [ "$STOPPING" = "1" ] || start_vpn; do
+    ks_attempts=$((ks_attempts + 1))
+    [ "$ks_attempts" = "3" ] && dump_firewall_counters
     echo "[rkz-vpn] INFO: reconnecting in ${RETRY_DELAY}s..."
     sleep_interruptible "$RETRY_DELAY"
     RETRY_DELAY=$((RETRY_DELAY * 2))
@@ -284,7 +516,6 @@ reconnect() {
   fi
   RETRY_DELAY=10
   ZOMBIE_COUNT=0
-  apply_killswitch
   echo "[rkz-vpn] $(date '+%F %T') OK: tunnel restored."
 }
 
@@ -315,11 +546,9 @@ STREAMER_PID=$!
 disable_ipv6_sysctl
 
 # DNS: use public resolvers, reached THROUGH the tunnel when it is up, and
-# directly when it is down (the kill switch allows DNS out for exactly
-# that). Host-provided resolvers (Docker's 127.0.0.11, Rancher/LAN proxies)
-# are unreachable as soon as the tunnel routes everything away - relying on
-# them silently breaks name resolution, and with it the kill switch rule
-# that needs the VPN server's hostname resolved.
+# directly when it is down (the kill switch allows exactly that, for uid 0
+# only). Host-provided resolvers (Docker's 127.0.0.11, LAN proxies) are
+# unreachable as soon as the tunnel routes everything away.
 cat > /etc/resolv.conf <<EOF
 nameserver 1.1.1.1
 nameserver 9.9.9.9
@@ -330,6 +559,17 @@ EOF
 # itself is the real requirement, and NET_ADMIN grants us the mknod.
 mkdir -p /dev/net
 [ -e /dev/net/tun ] || mknod /dev/net/tun c 10 200
+
+# The kill switch goes up BEFORE the first connection attempt and is never
+# touched again:
+#   - installed before OpenVPN, there is no instant in the container's life
+#     where traffic can leave unfiltered;
+#   - never reapplied, there is no instant where the policy is DROP without
+#     its allow rules - OpenVPN's `ping 5` keepalive survives because the
+#     rules and the policy land together, atomically.
+# WAN_IF is read here, while the default route still points at the docker
+# gateway - OpenVPN has not touched the routing table yet.
+apply_killswitch
 
 reconnect || graceful_shutdown
 
@@ -344,9 +584,11 @@ chown rakiz:rakiz /config /data /data/completed /data/incomplete /data/watch 2>/
 
 # -----------------------------------------------------------------------------
 # 3. Start Transmission as the unprivileged user, in the background; this
-#    shell (PID 1) stays in charge of the watchdog below.
+#    shell (PID 1) stays in charge of the watchdog below. setpriv (not
+#    su-exec) re-initializes the user's supplementary groups from /etc/group
+#    - rakiz is a member of GID 101, which the NAS data ACLs allow.
 # -----------------------------------------------------------------------------
-su-exec rakiz:rakiz transmission-daemon --foreground --config-dir /config &
+setpriv --reuid 1000 --regid 1000 --init-groups transmission-daemon --foreground --config-dir /config &
 TRANSMISSION_PID=$!
 echo "[rkz-vpn] INFO: Transmission started (PID $TRANSMISSION_PID)."
 write_status "true"
