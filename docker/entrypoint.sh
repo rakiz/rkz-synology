@@ -251,7 +251,7 @@ vpn_transport_rules() {
   grep -Ei '^[[:space:]]*remote[[:space:]]' "$OVPN_FILE" 2>/dev/null \
   | while read -r _kw _host rport rproto _rest; do
       case "$rport" in ''|*[!0-9]*) rport="$default_port" ;; esac
-      case "$(echo "$rproto" | tr 'A-Z' 'a-z')" in
+      case "$(echo "$rproto" | tr '[:upper:]' '[:lower:]')" in
         udp*) rproto="udp" ;;
         tcp*) rproto="tcp" ;;
         *)    rproto="$default_proto" ;;
