@@ -94,11 +94,15 @@ start_vpn() {
   sleep 1
   # provider .ovpn files reference their certs relatively (ca ca.crt) - run
   # from the .ovpn's own folder so they always resolve, whatever the provider
+  # --verb 3 caps verbosity even when the provider's .ovpn asks for more
+  # (CLI overrides the config file): the Synology log driver this container
+  # must use has no rotation option to absorb a chatty tunnel.
   openvpn --cd "$(dirname "$OVPN_FILE")" \
           --config "$OVPN_FILE" \
           --auth-user-pass "$CREDS_FILE" \
           --daemon \
-          --log "$OPENVPN_LOG"
+          --log "$OPENVPN_LOG" \
+          --verb 3
 
   for i in $(seq 1 30); do
     [ "$STOPPING" = "1" ] && return 1
@@ -416,9 +420,14 @@ disable_ipv6_sysctl() {
   # Defense in depth: if this works, IPv6 is off at the kernel level inside
   # the container even when the host lacks the ip6_tables module (common on
   # Synology DSM - the same reason WireGuard often can't be used there).
-  sysctl -w net.ipv6.conf.all.disable_ipv6=1 >/dev/null 2>&1 \
-    && echo "[rkz-vpn] OK: IPv6 disabled via sysctl." \
-    || echo "[rkz-vpn] WARN: IPv6 sysctl not applicable here (fine if ip6tables worked)."
+  # Normally already enforced at creation by the compose `sysctls:` block
+  # (a runtime `sysctl -w` cannot: /proc/sys is read-only) - accept that.
+  if [ "$(cat /proc/sys/net/ipv6/conf/all/disable_ipv6 2>/dev/null)" = "1" ] \
+     || sysctl -w net.ipv6.conf.all.disable_ipv6=1 >/dev/null 2>&1; then
+    echo "[rkz-vpn] OK: IPv6 disabled via sysctl."
+  else
+    echo "[rkz-vpn] WARN: IPv6 sysctl not applicable here (fine if ip6tables worked)."
+  fi
 }
 
 tunnel_is_healthy() {
@@ -532,7 +541,7 @@ reconnect() {
       tail -c +$((LOG_OFFSET + 1)) "$OPENVPN_LOG" 2>/dev/null | sed 's/^/[openvpn] /'
       LOG_OFFSET=$size
     elif [ "$size" -lt "$LOG_OFFSET" ]; then
-      LOG_OFFSET=$size
+      LOG_OFFSET=0
     fi
     sleep 1
   done ) &
