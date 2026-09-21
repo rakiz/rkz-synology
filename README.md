@@ -37,6 +37,7 @@ BitTorrent client **Transmission** behind an **OpenVPN** tunnel, in a single lig
 | **Kill switch by IP ranges, not by interface name** | The container's network interface name is not guaranteed (`eth0`, `br-*` depending on DSM); the rules match private IP ranges, not an interface name. |
 | **Hand-written entry script** | ~650 lines of POSIX sh understood end to end, no third-party abstraction layer to trust or update. |
 | **Peer port 51413 not published** | Intentional: peers reach the client through the tunnel (`tun0`). Publishing it on the host is useless (CyberGhost has no port forwarding) and is a leak vector. |
+| **No `logging:` block in docker-compose.yml** | Synology's Container Manager Journal reads its own `db` log driver: overriding it with `json-file` keeps `docker logs` working but leaves the Journal tab permanently empty. |
 | **All configuration comes from volumes** | The image contains no settings: the `.ovpn`, `credentials.txt` and `settings.json` all live on the NAS — one single mental model, and manual tweaks survive image upgrades by design. |
 
 ## Repository layout
@@ -190,6 +191,7 @@ Everything lands on stdout — in Container Manager: container → **Log** tab (
 | `[rkz-vpn] ERROR: Transmission exited unexpectedly` + container restarts | daemon crash | check the /config volume ownership (UID 1000) |
 | `WARN: ip6tables unavailable on this host` | host kernel lacks `ip6_tables` | IPv6 protection relies on the sysctl; verify `cat /proc/sys/net/ipv6/conf/all/disable_ipv6` returns `1` |
 | repeated `reconnecting in 60s...` | persistent failure (credentials, DNS, or unreachable server) | read the `[openvpn]` lines just above |
+| Journal tab empty in Container Manager (while `docker logs` works) | the compose overrides Synology's `db` log driver — do NOT add a `logging:` block (see Architecture choices) | remove the `logging:` block and rebuild the project |
 
 ## Configuration
 
@@ -223,7 +225,8 @@ docker buildx build --platform linux/amd64,linux/arm64 \
 ## Known limitations
 
 - **tun kernel module**: the container creates its own `/dev/net/tun` node, but the kernel module must exist. If it is not loaded (fresh DSM boot), load it once: `sudo insmod /lib/modules/tun.ko` — and add the same command to a boot-up task (DSM Task Scheduler) so it survives reboots.
-- **`ip6_tables` kernel module on the host**: if missing (possible on DSM), the logs show `ip6tables unavailable on this host` and IPv6 protection relies only on the sysctl — then verify that `docker exec rkz-transmission-openvpn cat /proc/sys/net/ipv6/conf/all/disable_ipv6` returns `1`.
+- **`ip6_tables` kernel module on the host**: if missing (possible on DSM), the logs show `ip6tables unavailable on this host` and IPv6 protection relies only on the sysctl (now enforced at container creation by the `sysctls:` block in docker-compose.yml) — then verify that `docker exec rkz-transmission-openvpn cat /proc/sys/net/ipv6/conf/all/disable_ipv6` returns `1`.
+- **`xt_owner` iptables match**: missing on Synology DSM kernels, so the kill switch cannot restrict the VPN-transport and DNS holes to uid 0 (OpenVPN only); the logs announce it (`WARN: xt_owner unavailable on this kernel`). Default-deny still holds, and torrent traffic only ever leaves through `tun+`.
 - **Container network interface name**: not guaranteed to be `eth0` depending on DSM; the kill switch matches private IP ranges rather than interface names, which limits the risk. If the LAN is unreachable at startup: `docker exec rkz-transmission-openvpn ip addr`.
 - **Zombie probe uses ICMP**: it pings `1.1.1.1` through `tun0`. If your VPN provider blocks ICMP, set `ZOMBIE_THRESHOLD=0` to disable the probe (the base watchdog stays active).
 
