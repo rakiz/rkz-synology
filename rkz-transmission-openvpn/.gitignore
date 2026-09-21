@@ -1,0 +1,14 @@
+# Local secrets - never commit
+openvpn/credentials.txt
+openvpn/*.ovpn
+openvpn/*.crt
+openvpn/*.key
+configuration/credentials.txt
+configuration/*.ovpn
+
+# Local environment
+.env
+
+# Misc
+.DS_Store
+*.swp

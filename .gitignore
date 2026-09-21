@@ -1,14 +1,6 @@
-# Local secrets - never commit
-openvpn/credentials.txt
-openvpn/*.ovpn
-openvpn/*.crt
-openvpn/*.key
-configuration/credentials.txt
-configuration/*.ovpn
-
-# Local environment
-.env
-
-# Misc
+# OS / editor noise (repo-wide)
 .DS_Store
 *.swp
+
+# Environment files (never commit real config)
+.env

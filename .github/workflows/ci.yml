@@ -11,21 +11,21 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - name: shellcheck
-        run: shellcheck docker/entrypoint.sh
+        run: shellcheck rkz-transmission-openvpn/docker/entrypoint.sh
 
   json:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
       - name: JSON validation
-        run: python3 -m json.tool configuration/settings.json.example > /dev/null
+        run: python3 -m json.tool rkz-transmission-openvpn/configuration/settings.json.example > /dev/null
 
   build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
       - name: Build the image
-        run: docker build -f docker/Dockerfile -t rkz-transmission-openvpn:ci .
+        run: docker build -f rkz-transmission-openvpn/docker/Dockerfile -t rkz-transmission-openvpn:ci rkz-transmission-openvpn
       - name: Smoke test - without an .ovpn the container must exit with code 1
         run: |
           set +e
